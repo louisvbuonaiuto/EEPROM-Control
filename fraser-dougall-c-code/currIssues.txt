@@ -1,0 +1,16 @@
+List of current known issues with radpicode
+
+Date: July 23, 2024
+==================================================
+
+* Segfault when testing with 1 or 2 banks & 8 EEPROMS per bank 
+	* may be radiation induced, more testing to verify this
+    * Fault happened either immediately after initialization or during testing time
+	* this may suggest EEPROM failure handling sucks -> code dies
+* potential issue: check the datatype of what's being read (make sure no signed/unsigned schenanigans)
+
+
+List of Solved issues with radpicode
+==================================================
+* doesn't check for 0xFF -> 0xXX -> 0xYY
+	* need to account for this for full coverage of all errors
