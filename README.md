@@ -1,22 +1,23 @@
 # EEPROM-Control
 
-This respository is a continuation of [Fraser Dougalls SPR-24-RADHARD-Research](https://github.com/FraserD404/Spr24-RadHard-Research.git) for EEPROM Control. The goal of this project is to further test EEPROMs of different packages and memory sizes.
+The goal of this project is to further test EEPROMs of different packages and memory sizes.
 
+This respository is a continuation of [Fraser Dougalls SPR-24-RADHARD-Research](https://github.com/FraserD404/Spr24-RadHard-Research.git) for EEPROM Control. 
 
 
 ### TODO: 
-- check Purdue bechtel center to see required training for soldering
-- Organize previous EEPROM control .c files into new github
-
-### CODE TODO
-- for CSV log date and time date was captured into folder 
 - Save specific EEPROM to CSV
+- research previous EEPROM Pi setups
 
 
-### Work done 6/15/2026:
-- organized github
-- improved csv file saving structure into data folder
+## Resources
 
-### Resources
-- https://www.youtube.com/watch?v=boLjE9jencI
+### PI 5
+![GPIO Pinout Diagram](https://www.raspberrypi.com/documentation/computers/images/GPIO-Pinout-Diagram-2.png?hash=df7d7847c57a1ca6d5b2617695de6d46)
+[GPIO Pinout](https://www.raspberrypi.com/documentation/computers/raspberry-pi.html#gpio)
+>EEPROM Data: (GPIO0); EEPROM Clock (GPIO1)
+
+### I<sup>2</sup>C
 - [Understanding I2C](https://www.youtube.com/watch?v=CAvawEcxoPU)
+- https://learn.sparkfun.com/tutorials/i2c
+- https://learn.sparkfun.com/tutorials/raspberry-pi-spi-and-i2c-tutorial

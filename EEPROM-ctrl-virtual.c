@@ -11,7 +11,7 @@
 	Email: fdougall@purdue.edu
 
 	Updated
-	Jun 15, 2026
+	Jun 16, 2026
     Author: Louis V. Buonaiuto
 	Email: lovbuona@iu.edu, louis107@comcast.net
 
@@ -25,8 +25,8 @@
 #include <stdint.h>
 #include <unistd.h>
 
-//#include <wiringPi.h>
-//#include <wiringPiI2C.h>
+#include <wiringPi.h>
+#include <wiringPiI2C.h>
 
 #include <time.h>
 #include <stdbool.h>
@@ -44,7 +44,7 @@
 
 // How long to run the test - seconds
 // default is 30 min -> 1800 seconds
-#define RUNNING_TIME_SEC 1
+#define RUNNING_TIME_SEC 5
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 typedef struct {
@@ -97,7 +97,7 @@ int getEEPROMSize(int bank, int num) {
 
 			break;
 		default:
-			return -1; 
+			return EXIT_FAILURE; 
 			break;
 	}
 
@@ -105,50 +105,46 @@ int getEEPROMSize(int bank, int num) {
 	return 1000 * sizeKB; 
 }
 
-/*
-   Initialize GPIO Pins
-   */
-/*
-   void initGPIO() {
-   wiringPiSetup();
 
-   pinMode(BANK_SELECT_1, OUTPUT);
-   pinMode(BANK_SELECT_2, OUTPUT);
-   }
-   */
+/*** Initialize GPIO Pins ***/
 
-/*
-   Choose with bank of EEPROM we are looking at by changing which switch state we are at
-   */
-/*
-   void selectBank(int bank) {
-   switch (bank) {
-   case 0:
-   digitalWrite(BANK_SELECT_1, LOW);
-   digitalWrite(BANK_SELECT_2, LOW);
+void initGPIO() 
+	{
+	wiringPiSetup();
 
-   break;
-   case 1:
-   digitalWrite(BANK_SELECT_1, HIGH);
-   digitalWrite(BANK_SELECT_2, LOW);
+	pinMode(BANK_SELECT_1, OUTPUT);
+	pinMode(BANK_SELECT_2, OUTPUT);
+	}
 
-   break;
-   case 2:
-   digitalWrite(BANK_SELECT_1, HIGH);
-   digitalWrite(BANK_SELECT_2, HIGH);
+/*** Choose with bank of EEPROM we are looking at by changing which switch state we are at ***/
 
-   break;
-   default:
-   printf("Invalid bank number\n");
+void selectBank(int bank) 
+	{
+	switch (bank) 
+		{
+		case 0:
+			digitalWrite(BANK_SELECT_1, LOW);
+			digitalWrite(BANK_SELECT_2, LOW);
+			break;
 
-   break;
-   }
-   }
-   */
+		case 1:
+			digitalWrite(BANK_SELECT_1, HIGH);
+			digitalWrite(BANK_SELECT_2, LOW);
+			break;
 
-/* 
-   Initialize all EEPROMs to have 0xFF in all memory locations
-   */
+			case 2:
+			digitalWrite(BANK_SELECT_1, HIGH);
+			digitalWrite(BANK_SELECT_2, HIGH);
+			break;
+
+		default:
+			printf("Invalid bank number\n");
+			break;
+		}
+	}
+
+/*** Initialize all EEPROMs to have 0xFF in all memory locations ***/
+
 void initEEPROMs(allEEPROMs* population) {
 	// stores current eeprom
 	EEPROM* current = NULL;
@@ -283,10 +279,7 @@ int main(void) {
 		return EXIT_FAILURE;
 	}
 
-	time_t ctime = time(NULL);
-
-// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-// file handling
+	/*** file handling ***/
 	char filename[50];
 
 	sprintf(filename, "./data/board-%d-data.csv", board_num); // this is susceptible to buffer overflow if board_num is exceptionally large
@@ -299,8 +292,6 @@ int main(void) {
 
 	fprintf(csv_file, "Elapsed Time,Bank,EEPROM,Failures\n");
 	fclose(csv_file);
-	fopen(filename, "a");
-// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 	// malloc our entire EEPROM handler
 	allEEPROMs* population = (allEEPROMs*) malloc(sizeof(*population));
@@ -311,15 +302,20 @@ int main(void) {
 	// Initialize everything
 	initEEPROMs(population);
 
-	// reset
-	ctime = time(NULL); 
 
+	/*** data logging ***/
+	time_t ctime;
 	printf("it's logging time\n");
 
 	// Continuously log data - no sleep needed since takes time to read EEPROMs
 	//
 	// TODO: more finegrained control over how long we're running? (run exactly for 30 seconds)
 	// if so need to figure out what timers we have access to on Pi
+	
+	// reset time
+	ctime = time(NULL);
+
+	fopen(filename, "a");
 	while ( (int)(difftime(time(NULL), ctime)) <= RUNNING_TIME_SEC ) {
 		logger(ctime, 0, board_num, csv_file, population);
 		fclose(csv_file); // update file & flush buffer
