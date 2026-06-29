@@ -8,7 +8,7 @@ This respository is a continuation of [Fraser Dougalls SPR-24-RADHARD-Research](
 ### TODO: 
 - Save specific EEPROM to CSV
 - research previous EEPROM Pi setups
-
+- ssh to pi "~ λ ssh louis107@blueberrypi.local" password: 5682
 
 ## Resources
 
@@ -21,3 +21,4 @@ This respository is a continuation of [Fraser Dougalls SPR-24-RADHARD-Research](
 - [Understanding I2C](https://www.youtube.com/watch?v=CAvawEcxoPU)
 - https://learn.sparkfun.com/tutorials/i2c
 - https://learn.sparkfun.com/tutorials/raspberry-pi-spi-and-i2c-tutorial
+
