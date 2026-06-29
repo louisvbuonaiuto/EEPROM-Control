@@ -12,6 +12,9 @@ This respository is a continuation of [Fraser Dougalls SPR-24-RADHARD-Research](
 
 ## Resources
 
+### wiringPi
+
+
 ### PI 5
 ![GPIO Pinout Diagram](https://www.raspberrypi.com/documentation/computers/images/GPIO-Pinout-Diagram-2.png?hash=df7d7847c57a1ca6d5b2617695de6d46)
 [GPIO Pinout](https://www.raspberrypi.com/documentation/computers/raspberry-pi.html#gpio)
