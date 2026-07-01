@@ -11,12 +11,9 @@
 	Email: fdougall@purdue.edu
 
 	Updated
-	Jun 16, 2026
+	Jun 30, 2026
     Author: Louis V. Buonaiuto
 	Email: lovbuona@iu.edu, louis107@comcast.net
-
-	THIS IS THE CODE THAT WILL BE USED TO TEST THINGS VIRTUALLY
-	NOT THE ACTUAL 
 
 */
 
@@ -32,14 +29,9 @@
 #include <stdbool.h>
 #include <stdlib.h>
 
-// Selector Pins
-#define BANK_SELECT_1 0
-#define BANK_SELECT_2 1
 
 // EEPROM Banking Information
 #define EEPROM_ADDRESS 0x50 // base EEPROM I2C address
-#define NUM_BANKS 2
-#define EEPROMS_PER_BANK 8
 #define MAX_EEPROM_SIZE 512000 // maximum size we have
 
 // How long to run the test - seconds
@@ -61,141 +53,18 @@ typedef struct {
 	EEPROM* all;
 } allEEPROMs; 
 
-// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-
-int totalEEPROMs = NUM_BANKS * EEPROMS_PER_BANK; 
-
-// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-
-// Return how many bytes are stored in a given bank, EEPROM combo
-int getEEPROMSize(int bank, int num) {
-	int sizeKB;
-
-	switch(bank){
-		case 0: 
-			if(num >= 0 && num <= 3) { 
-				sizeKB = 1;
-			} else {
-				sizeKB = 512; 
-			}
-
-			break;
-		case 1: 
-			if(num >= 0 && num <= 3) { 
-				sizeKB = 32;
-			} else { 
-				sizeKB = 128; 
-			}
-
-			break;
-		case 2: 
-			if(num >= 0 && num <= 3) { 
-				sizeKB = 4;
-			} else {
-				sizeKB = -1; 
-			} 
-
-			break;
-		default:
-			return EXIT_FAILURE; 
-			break;
-	}
-
-	// kilobytes -> bytes
-	return 1000 * sizeKB; 
-}
-
 
 /*** Initialize GPIO Pins ***/
 
 void initGPIO() 
 	{
-	wiringPiSetup();
+   	wiringPiSetupPinType(WPI_PIN_BCM); // PIN numbering: WiringPi-Numbering
 
-	pinMode(BANK_SELECT_1, OUTPUT);
-	pinMode(BANK_SELECT_2, OUTPUT);
 	}
-
-/*** Choose with bank of EEPROM we are looking at by changing which switch state we are at ***/
-
-void selectBank(int bank) 
-	{
-	switch (bank) 
-		{
-		case 0:
-			digitalWrite(BANK_SELECT_1, LOW);
-			digitalWrite(BANK_SELECT_2, LOW);
-			break;
-
-		case 1:
-			digitalWrite(BANK_SELECT_1, HIGH);
-			digitalWrite(BANK_SELECT_2, LOW);
-			break;
-
-			case 2:
-			digitalWrite(BANK_SELECT_1, HIGH);
-			digitalWrite(BANK_SELECT_2, HIGH);
-			break;
-
-		default:
-			printf("Invalid bank number\n");
-			break;
-		}
-	}
-
-/*** Initialize all EEPROMs to have 0xFF in all memory locations ***/
-
-void initEEPROMs(allEEPROMs* population) {
-	// stores current eeprom
-	EEPROM* current = NULL;
-
-	for (int bank = 0; bank < NUM_BANKS; bank++) {
-		//selectBank(bank);
-
-		for (int eeprom = 0; eeprom < EEPROMS_PER_BANK; eeprom++) {
-			// grab current EEPROM from array
-			current = (population->all) + (bank * EEPROMS_PER_BANK + eeprom); // this access is safe
-
-			// current->i2cAddr = wiringPiI2CSetup(EEPROM_ADDRESS + eeprom);
-			current->i2cAddr = 0xAF;
-
-			// make sure EEPROM exists before accessing
-			if (current->i2cAddr < 0) {
-				printf("Failed to initialize EEPROM %d in bank %d\n", eeprom, bank);
-
-				current->failures = -1; // this will underflow
-			} else {
-				current->size = getEEPROMSize(bank, eeprom);
-				bool init = true;
-
-				// Linearly initialize all locations in EEPROM ; wish this was faster but impossible for better than O(n)
-				for (int num = 0; num < current->size; num++) {
-					/*
-					   if (wiringPiI2CWrite(current->i2cAddr, 0xFF) == -1) {
-					   printf("Failed to write to EEPROM %d in bank %d\n", eeprom, bank);
-					   init = false;
-
-					   break;
-					   } 		
-					*/
-				}
-
-				if(init) {
-					// malloc our saved addresses array
-					current->priorState = calloc(current->size, sizeof(current->priorState));
-
-					printf("Initialized EEPROM %d in bank %d\n", eeprom, bank);
-				}
-
-				close(current->i2cAddr);
-			}
-		}
-	}
-}
 
 
 // remove this when testing on physical hardware
-int correctValue = 0x0F;
+//int correctValue = 0x0F;
 
 void logger(time_t startTime, int greedy, int boardNum, FILE* csv_file, allEEPROMs* population) {
 	time_t currTime = 0;

@@ -6,55 +6,56 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
+#include <unistd.h>
 
 #include <wiringPi.h>
 #include <wiringPiI2C.h>
 
-#define GPIO2 8
-#define GPIO3 9
-
-#define I2C_ADDR 0x20
-void initGPIO(void)
-{
-   wiringPiSetupPinType(WPI_PIN_WPI); // PIN numbering: WiringPi-Numbering
-}
+#define EEPROM_ADDR 0x50
+#define MEM_ADDR    0x00
 
 int main(void) 
 {
-    initGPIO();
-
-    // sets pin modes
-    pinMode(GPIO2, OUTPUT);
-    pinMode(GPIO3, OUTPUT)
-
-    digitalWrite(GPIO2, HIGH);
-    digitalWrite(GPIO3, HIGH)
+   wiringPiSetupPinType(WPI_PIN_BCM); // PIN numbering: WiringPi-Numbering
 
     // I2C Bus write and read test
-    int fd = wiringPiI2CSetup(I2C_ADDR)
+    int fd = wiringPiI2CSetup(EEPROM_ADDR);
 
     if (fd < 0) {
         fprintf(stderr, "Error: Wiring Pi Setup Failed\n");
         return EXIT_FAILURE;
         }
 
-    uint8_t i2cvalue = 0x55;
-    int result = wiringPiI2CRawWrite(fd, &i2cvalue, 1);
+    uint8_t writeData = 0x55;
 
-    if (result != 1) {
-        fprintf(stderr, "Error: Data writing failure\n");
+    /* Write one byte to EEPROM location 0x00 */
+    if (wiringPiI2CWriteReg8(fd, MEM_ADDR, writeData) < 0)
+    {
+        fprintf(stderr, "EEPROM write failed.\n");
         return EXIT_FAILURE;
-        }
+    }
     
-    // 1 byte from i2cvalue sent to I2C_ADDR slave 
-    // now read that data
-    result = wiringPiI2CRawRead(fd,&i2cvalue, 1);
-    if (result != 1) {
-        fprintf(stderr, "Error: Data reading failure\n");
-        return EXIT_FAILURE;
-        }
 
-    printf("i2cvalue: %d\n", i2cvalue);
+    /* Wait for EEPROM write cycle */
+    usleep(10000);      // 10 ms
+
+    /* Read it back */
+    int readData = wiringPiI2CReadReg8(fd, MEM_ADDR);
+
+    if (readData < 0)
+    {
+        fprintf(stderr, "EEPROM read failed.\n");
+        return EXIT_FAILURE;
+    }
+
+    printf("Wrote : 0x%02X\n", writeData);
+    printf("Read  : 0x%02X\n", readData & 0xFF);
+
+    if ((readData & 0xFF) == writeData)
+        printf("PASS\n");
+    else
+        printf("FAIL\n");
 
     return EXIT_SUCCESS;
 }
