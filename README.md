@@ -8,7 +8,12 @@ This respository is a continuation of [Fraser Dougalls SPR-24-RADHARD-Research](
 ### TODO: 
 - Save specific EEPROM to CSV
 - research previous EEPROM Pi setups
-- ssh to pi "~ λ ssh louis107@blueberrypi.local" password: 5682
+
+### connecting to neutronPi
+Currently the neutronPi (Raspberry Pi 4) has a headless configuration with Raspberry Pi OS Lite (64-bit) 
+Louis Buonaiuto Purdue Pal3.0 login
+note sometimes ssh doesn't work since some buildings block ssh. Some PAL3.0 work some don't
+ssh to pi "$ ssh louis@neutronPi.local" password: 5682
 
 ## Resources
 
