@@ -10,8 +10,23 @@ functions for readings and writing data to an EEPROM
 #include <string.h>
 #include <wiringPi.h> // for delay()
 
-// functions are static inline so they will be placed directly into the code once compiled
-static inline int readMemoryByte16(int memFd, uint16_t memAddress) {
+typedef struct {
+	int size;				// size in bytes of EEPROM
+	int i2cAddr_fd;			// file descriptor of the i2c
+	size_t failures;		// how many times has this EEPROM experienced a flip
+	uint8_t* priorState;	// addresses that we know have failed
+
+	// types of bit flips
+	size_t oneToZeroFlips;	// number of 0->1 bit flips
+	size_t zeroToOneFlips;	// number of 1->0 bit flips
+	size_t hardFaultBits;	// number of hardfaulting bits
+} EEPROM;
+
+/*
+ * Since 
+ 
+
+int readMemoryByte16(int fd, uint16_t addr) {
 	uint8_t addressBuffer[2];
 	uint8_t dataBuffer[1];
 
@@ -35,7 +50,7 @@ static inline int readMemoryByte16(int memFd, uint16_t memAddress) {
 	return dataBuffer[0];
 }
 
-static inline int writeMemoryByte16(int memFd, uint16_t memAddress, uint8_t data) {
+int writeMemoryByte16(int memFd, uint16_t memAddress, uint8_t data) {
 	uint8_t buffer[3];
 
 	// pack the 16 bit address in Big-Endian order
@@ -54,3 +69,6 @@ static inline int writeMemoryByte16(int memFd, uint16_t memAddress, uint8_t data
 	
 	return EXIT_SUCCESS;
 }
+
+// reads and returns factory programmed 128-bit (16-byte) unique serial number
+*/

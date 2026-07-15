@@ -5,29 +5,16 @@
 #include <stdbool.h>
 #include <stdlib.h>
 
+#include <wiringPi.h>
 #include <wiringPiI2C.h>
-#include "../include/eeprom-i2c.h"
+#include "eeprom-i2c.h"
 
 
 #define EEPROM_ADDRESS 0x50
-#define EEPROM_SIZE 4096	// in bytes
+#define EEPROM_SIZE 128	// in bytes
 #define RUNNING_TIME_SEC 5
 
-typedef struct {
-	int size;				// size in bytes of EEPROM
-	int i2cAddr_fd;			// file descriptor of the i2c bus
-	size_t failures;		// how many times has this EEPROM experienced a flip
-	uint8_t* priorState;	// addresses that we know have failed
-
-	// types of bit flips
-	size_t oneToZeroFlips;	// number of 0->1 bit flips
-	size_t zeroToOneFlips;	// number of 1->0 bit flips
-	size_t hardFaultBits;	// number of hardfaulting bits
-} EEPROM;
-
-
-
-void initEEPROM(EEPROM* eeprom) {
+int initEEPROM(EEPROM* eeprom) {
 
 	eeprom->size = EEPROM_SIZE;
 	eeprom->priorState = NULL;
@@ -43,26 +30,29 @@ void initEEPROM(EEPROM* eeprom) {
 	if (eeprom->i2cAddr_fd < 0) {
 		printf("Failed to initialize EEPROM at address 0x%X\n", EEPROM_ADDRESS);
 		eeprom->failures = -1; // this will underflow, very big number
-		return;
+		return EXIT_FAILURE;
 		}
 	
 	bool init = true;
 
 	/* initialize all bits in EEPROM to 1 by setting each byte to 0xFF.
 	*/
-	for (int byte = 0; byte < eeprom->size; byte++) {
-		if (writeMemoryByte16(eeprom->i2cAddr_fd, byte, 0xFF) == -1) {
-			printf("Failed to write to EEPROM at byte %d\n", byte);
+	for (int reg = 0; reg < eeprom->size; reg++) {
+		if (wiringPiI2CWriteReg8(eeprom->i2cAddr_fd, reg, 0xFF) == -1) {
+			printf("ERROR: Failed to write to EEPROM at register: %d\n", reg);
 			init = false;
 			break;
 		}
+		delay(5);
 	}
-	if (init) {
-		eeprom->priorState = (uint8_t*) calloc(eeprom->size, sizeof(uint8_t));
-		printf("Initialized EEPROM at address 0x%X\n", EEPROM_ADDRESS);
-	}
-	
 	close(eeprom->i2cAddr_fd);
+
+	if (init == false) return EXIT_FAILURE;
+	
+	eeprom->priorState = (uint8_t*) calloc(eeprom->size, sizeof(uint8_t));
+	printf("Initialized EEPROM at address 0x%X\n", EEPROM_ADDRESS);
+	return EXIT_SUCCESS;
+	
 }
 
 void logger(time_t startTime, FILE* csv_file, EEPROM* eeprom) {
@@ -73,19 +63,22 @@ void logger(time_t startTime, FILE* csv_file, EEPROM* eeprom) {
 
 	/*
 	Check for bit flips and types 
-	*/
+	*/ 
+	// TODO This is having problems when reading the data, copy code from read-write test since that is working
+	// TODO rewrite this so error handling doesn't nest code, if (error) // error handle code;
 	if (eeprom->i2cAddr_fd >= 0) {
-		for (int byte = 0; byte < eeprom->size; byte++) {
-			uint8_t data = readMemoryByte16(eeprom->i2cAddr_fd, byte);
-			printf("data: %d byte:%d\n",data,byte);
+		for (int reg = 0; reg < eeprom->size; reg++) {
+			int data = wiringPiI2CReadReg8(eeprom->i2cAddr_fd, reg);
+			
+			printf("data: %d byte:%d\n",data,reg);
 
-			if (data != eeprom->priorState[byte] && data > 0) { // flip detected
+			if (data != eeprom->priorState[reg] && data > 0) { // flip detected
 				eeprom->failures = eeprom->failures + 1;	// increment failure count
 
 				for (uint8_t i = 0; i < 8; i++) { // this byte doesn't match the previous state
 					// extract bit we are looking at
 					uint8_t currBit = (data & (1<<i)) >> i;
-					uint8_t priorBit = ((eeprom->priorState)[byte] & (1 << i)) >> i;
+					uint8_t priorBit = ((eeprom->priorState)[reg] & (1 << i)) >> i;
 					// check what type of bit flip
 					if (priorBit == 1 && currBit == 0) {
 						eeprom->oneToZeroFlips += 1;
@@ -95,12 +88,13 @@ void logger(time_t startTime, FILE* csv_file, EEPROM* eeprom) {
 					}
 				}
 				// restore byte to prior state before bit flip
-				writeMemoryByte16(eeprom->i2cAddr_fd, byte, (eeprom->priorState[byte]));
+				wiringPiI2CWriteReg8(eeprom->i2cAddr_fd, reg, (eeprom->priorState[reg]));
 				// update prior state
-				(eeprom->priorState)[byte] = data;
+				(eeprom->priorState)[reg] = data;
 
 			} else {
-				printf("failed to read from EEPROM\n");
+				printf("ERROR: failed to read from EEPROM at register: %d\n", reg);
+					
 			}
 		}
 	
@@ -121,18 +115,17 @@ void logger(time_t startTime, FILE* csv_file, EEPROM* eeprom) {
 }
 
 int main(void) {
-	//wiringPiSetup();
 
 	time_t ctime = time(NULL);
 
 	// file creation
 	char filename[100];
-	snprintf(filename, sizeof(filename), "data/board-data.csv");
+	snprintf(filename, sizeof(filename), "data/testing-board-data.csv");
 	
 	FILE *csv_file = fopen(filename, "a");
 	if (csv_file == NULL) {
 		printf("Failed to open CSV file\n");
-		return -1;
+		return EXIT_FAILURE;
 	}
 
 	fprintf(csv_file, "Elapsed Time, Failures\n");
@@ -141,7 +134,10 @@ int main(void) {
 
 	EEPROM eeprom = {0};
 
-	initEEPROM(&eeprom);
+	if (initEEPROM(&eeprom) != 0) {
+		printf("ERROR: eeprom not initialized\n");
+		return EXIT_FAILURE;
+	}
 
 	// reset time and start test
 	ctime = time(NULL);
