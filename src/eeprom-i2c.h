@@ -17,18 +17,25 @@ functions for readings and writing data to an EEPROM
 
 #define SERIAL_NUMBER_LEN 16 // length of EEPROM serial number in bytes
 
+typedef struct {
+	// structure for a bit in an EEPROMs memory to track its flips
+	// memory chips layed out as #ofcells * size of cell, ex: 128 * 8
+	size_t byte_offset;	// which cell is this bit in
+	size_t byte_index;	// which bit in the cell
+	size_t oneToZeroFlips;	// how many of these bit flips have occured
+	size_t zeroToOneFlips;
+	size_t softErrors;
+	bool hardFault;
+} BitRecord;
 
 typedef struct {
-	int size;				// size in bytes of EEPROM
-	int i2cAddr_fd;			// file descriptor of the i2c
-	size_t failures;		// how many times has this EEPROM experienced a flip
-	uint8_t* priorState;	// addresses that we know have failed
-
-	// types of bit flips
-	size_t oneToZeroFlips;	// number of 0->1 bit flips
-	size_t zeroToOneFlips;	// number of 1->0 bit flips
-	size_t hardFaultBits;	// number of hardfaulting bits
+	size_t size;					// size in bytes of EEPROM
+	size_t numFlippedBits;	
+	size_t flippedBitsCapacity;		// size*8, used to exit program if all bits have experienced a flip
+	int i2cAddr_fd;					// file descriptor of the i2c connection
+	BitRecord* flippedBits;			// dynamic array of bits that have failed, this grows as more bits fail
 } EEPROM;
+
 
 int readSerialNumber(int fd, char *serial_number_ptr) {
 	/*
