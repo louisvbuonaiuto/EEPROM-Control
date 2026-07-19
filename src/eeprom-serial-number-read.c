@@ -51,8 +51,3 @@ int main(void)
 	printf("Serial Number: %s\n", serial_number);
 	return EXIT_SUCCESS;
 }
-
-void eepromClose(EEPROM* eeprom) {
-	close(eeprom->i2cAddr_fd);
-	exit(EXIT_FAILURE);
-}

@@ -35,10 +35,10 @@ int readSerialNumber(int fd, char *serial_number_ptr) {
 	 * reads factory programmed serial number and writes the serial number to char *serial_number_ptr
 	 */
 
-	// according to the AT24CS01 datasheet a serial read requires a dummy write seuqnce before 
+	// according to the AT24CS01 datasheet a serial read requires a dummy write sequence before 
 	// the serial number read. It turns out wiringPiI2CReadReg8 already does this so you just
-	// have to read 16 bytes from the first byte of the serial number 0x80 or 80h (80 hex, idk why they write it like this in the data sheet
-	// important note: The serial number is stored in 16 bytes of memory and to get the serial number you must
+	// have to read 16 bytes contiguously from the first byte of the serial number 0x80 or 80h (80 hex, idk why they write it like this in the data sheet
+	// important note: The serial number is a combination of all the 16 bytes that are stored in memory to make one long hexidecimal number. To get the serial number you must
 	// combine all of the bytes into one long hexadecimal number. reg1:0x09 reg2:0x40... Serialnumber 0x0940...
 	uint8_t serial_bytes[SERIAL_NUMBER_LEN] = {0};
 	for (uint16_t reg = 0; reg < SERIAL_NUMBER_LEN; reg++) {
@@ -59,6 +59,10 @@ int readSerialNumber(int fd, char *serial_number_ptr) {
 	return EXIT_SUCCESS;
 }
 
+void eepromClose(EEPROM* eeprom) {
+	close(eeprom->i2cAddr_fd);
+	exit(EXIT_FAILURE);
+}
 
 /*
  
