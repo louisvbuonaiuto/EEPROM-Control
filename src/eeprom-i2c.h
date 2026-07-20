@@ -20,20 +20,20 @@ functions for readings and writing data to an EEPROM
 typedef struct {
 	// structure for a bit in an EEPROMs memory to track its flips
 	// memory chips layed out as #ofcells * size of cell, ex: 128 * 8
-	size_t byte_offset;	// which cell is this bit in
-	size_t byte_index;	// which bit in the cell
-	size_t oneToZeroFlips;	// how many of these bit flips have occured
-	size_t zeroToOneFlips;
-	size_t softErrors;
-	bool hardFault;
+	size_t byteOffset;		// which cell is this bit in
+	size_t bitIndex;		// which bit in the cell, 0-7
+	bool hardFault;			// is this bit stuck?
 } BitRecord;
 
 typedef struct {
-	size_t size;					// size in bytes of EEPROM
-	size_t numFlippedBits;	
-	size_t flippedBitsCapacity;		// size*8, used to exit program if all bits have experienced a flip
-	int i2cAddr_fd;					// file descriptor of the i2c connection
-	BitRecord* flippedBits;			// dynamic array of bits that have failed, this grows as more bits fail
+	int size;					// size in bytes of EEPROM
+	size_t numFlippedBits;		// number of bit flip occurences
+	size_t numHardFaultBits;	// number of hard fault occurences
+	size_t maxHardFaultBits;	// size*8, used to exit program if all bits have experienced a flip
+	size_t oneToZeroFlips;
+	size_t zeroToOneFlips;
+	int i2cAddr_fd;				// file descriptor of the i2c connection
+	BitRecord* flippedBitsPtr;	// dynamic array of bits that have failed, this grows as more bits fail
 } EEPROM;
 
 
