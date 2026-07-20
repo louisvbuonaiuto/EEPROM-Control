@@ -1,10 +1,20 @@
 /*
+ *
+ * functions for readings and writing data to an EEPROM
+ *
+ */
 
-functions for readings and writing data to an EEPROM
+//===================================
+// eeprom-i2c.h
+//===================================
 
-*/
+#ifndef EEPROM_I2C_H
+#define EEPROM_I2C_H
+
 #include <stdio.h>
 #include <stdint.h>
+#include <stdbool.h>
+#include <stdlib.h>
 #include <unistd.h>
 #include <errno.h>
 #include <string.h>
@@ -17,27 +27,38 @@ functions for readings and writing data to an EEPROM
 
 #define SERIAL_NUMBER_LEN 16 // length of EEPROM serial number in bytes
 
+// number of times to retry a restore-write + verify-read before
+// concluding a bit is truly stuck (hard fault) rather than a transient
+// re-hit or a bus/read hiccup.
+#define RESTORE_VERIFY_RETRIES 3
 
 typedef struct {
-	// structure for a bit in an EEPROMs memory to track its flips
-	// the element in the array refers to which register
+	// structure for a single bit in an EEPROM's memory, used to track
+	// its flip history over the course of the test.
+	// only bits that have flipped at least once get a BitRecord --
+	// this keeps memory usage proportional to actual damage rather
+	// than allocating a record for every bit in the device up front.
 	size_t byteOffset;
 	size_t bitIndex;
-	bool hardFault;
+	bool hardFault;			// true once write-back+read-back verification fails
+	size_t timesFlipped;	// total flip events observed at this bit (soft errors only)
+	time_t firstFlipTime;	// elapsed test time (sec) at first observed flip
+	time_t lastFlipTime;	// elapsed test time (sec) at most recent observed flip
 } BitRecord;
 
 typedef struct {
 	int size;					// size in bytes of EEPROM
-	size_t numBitFlips;		// number of bit flip occurences
-	size_t numHardFaultBits;	// number of hard fault occurences
-	size_t maxHardFaultBits;	// size*8, used to exit program if all bits have experienced a flip
+	size_t numBitFlips;			// number of soft bit-flip occurrences (not counting hard faults)
+	size_t numHardFaultBits;	// number of bits confirmed stuck (hard fault)
+	size_t maxHardFaultBits;	// size*8
 	size_t oneToZeroFlips;
 	size_t zeroToOneFlips;
+	size_t readFailures;		// count of failed register reads (I2C/transport issues)
 	int i2cAddr_fd;				// file descriptor of the i2c connection
-	uint8_t* priorState;
-	size_t capacity;		// capacity of dynamic array
-	int* bitLookup;			// used for indexing pointer for faster lookup per bit
-	BitRecord* flippedBitsPtr;	// array of bits in memory
+	uint8_t* priorState;		// reference/expected value for each byte
+	size_t capacity;			// capacity of dynamic flippedBitsPtr array
+	int* bitLookup;				// size*8 entries; bit = -1 has no history yet
+	BitRecord* flippedBitsPtr;	// dynamic array of BitRecords, one per bit that has ever flipped
 } EEPROM;
 
 
@@ -70,60 +91,22 @@ int readSerialNumber(int fd, char *serial_number_ptr) {
 	return EXIT_SUCCESS;
 }
 
+// Each free() is guarded with a NULL check since eepromClose can be called
+// before all three arrays have necessarily been allocated
 void eepromClose(EEPROM* eeprom) {
-	close(eeprom->i2cAddr_fd);
-	free(eeprom->priorState);
-	free(eeprom->flippedBitsPtr);
-	free(eeprom->bitLookup);
+	if (eeprom->i2cAddr_fd >= 0) {
+		close(eeprom->i2cAddr_fd);
+	}
+	if (eeprom->priorState != NULL) {
+		free(eeprom->priorState);
+	}
+	if (eeprom->flippedBitsPtr != NULL) {
+		free(eeprom->flippedBitsPtr);
+	}
+	if (eeprom->bitLookup != NULL) {
+		free(eeprom->bitLookup);
+	}
 	exit(EXIT_FAILURE);
 }
 
-/*
- 
-
-int readMemoryByte16(int fd, uint16_t addr) {
-	uint8_t addressBuffer[2];
-	uint8_t dataBuffer[1];
-
-	// split the 16 bit address into Big-Endian format (High Byte first)
-	addressBuffer[0] = (memAddress >> 8) & 0xFF;
-	addressBuffer[1] = memAddress & 0xFF;
-
-	// tell eeprom which address to point to
-	if (write(memFd, addressBuffer, 2) != 2) {
-		fprintf(stderr, "EEPROM Read Pointer Setup Error at address 0x%04X: %s\n", memAddress, strerror(errno));
-		return -1;
-	}
-	
-	// read the actual byte resting at that address slot
-	if (read(memFd, dataBuffer, 1) != 1) {
-		printf("Error: Failed to read data byte from EEPROM\n");
-		return -1;
-	}
-	
-	// return successfully read byte
-	return dataBuffer[0];
-}
-
-int writeMemoryByte16(int memFd, uint16_t memAddress, uint8_t data) {
-	uint8_t buffer[3];
-
-	// pack the 16 bit address in Big-Endian order
-	buffer[0] = (memAddress >> 8) & 0xFF;	// high byte
-	buffer[1] = memAddress & 0xFF;			// low byte
-	
-	// pack the data payload
-	buffer[2] = data;
-
-	// write all 3 bytes at once to the linux file handle
-	if (write(memFd, buffer, 3) != 3) {
-		fprintf(stderr, "EEPROM Write Error at address 0x%04X: %s\n", memAddress, strerror(errno));
-		return -1;
-	}
-	delay(5); // EEPROM hardware writes need to sleep for 5ms
-	
-	return EXIT_SUCCESS;
-}
-
-// reads and returns factory programmed 128-bit (16-byte) unique serial number
-*/
+#endif // EEPROM_I2C_H
