@@ -17,23 +17,27 @@ functions for readings and writing data to an EEPROM
 
 #define SERIAL_NUMBER_LEN 16 // length of EEPROM serial number in bytes
 
+
 typedef struct {
 	// structure for a bit in an EEPROMs memory to track its flips
-	// memory chips layed out as #ofcells * size of cell, ex: 128 * 8
-	size_t byteOffset;		// which cell is this bit in
-	size_t bitIndex;		// which bit in the cell, 0-7
-	bool hardFault;			// is this bit stuck?
+	// the element in the array refers to which register
+	size_t byteOffset;
+	size_t bitIndex;
+	bool hardFault;
 } BitRecord;
 
 typedef struct {
 	int size;					// size in bytes of EEPROM
-	size_t numFlippedBits;		// number of bit flip occurences
+	size_t numBitFlips;		// number of bit flip occurences
 	size_t numHardFaultBits;	// number of hard fault occurences
 	size_t maxHardFaultBits;	// size*8, used to exit program if all bits have experienced a flip
 	size_t oneToZeroFlips;
 	size_t zeroToOneFlips;
 	int i2cAddr_fd;				// file descriptor of the i2c connection
-	BitRecord* flippedBitsPtr;	// dynamic array of bits that have failed, this grows as more bits fail
+	uint8_t* priorState;
+	size_t capacity;		// capacity of dynamic array
+	int* bitLookup;			// used for indexing pointer for faster lookup per bit
+	BitRecord* flippedBitsPtr;	// array of bits in memory
 } EEPROM;
 
 
@@ -68,6 +72,9 @@ int readSerialNumber(int fd, char *serial_number_ptr) {
 
 void eepromClose(EEPROM* eeprom) {
 	close(eeprom->i2cAddr_fd);
+	free(eeprom->priorState);
+	free(eeprom->flippedBitsPtr);
+	free(eeprom->bitLookup);
 	exit(EXIT_FAILURE);
 }
 

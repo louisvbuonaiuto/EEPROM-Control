@@ -22,6 +22,7 @@
 #define EEPROM_ADDRESS 0x50
 #define EEPROM_SERIAL_NUM_ADDRESS 0x58
 #define EEPROM_SIZE 128	// in bytes
+#define WRITE_DELAY 5	// ms, refer to datasheet for max write cycle time
 #define RUNNING_TIME_SEC 3
 #define INIT_BYTES_VALUE 0xFF
 
@@ -29,64 +30,57 @@
 void initEEPROM(EEPROM* eeprom) {
 
 	eeprom->size = EEPROM_SIZE;
-	eeprom-> flippedBitsPtr = NULL;
-	eeprom->i2cAddr_fd = wiringPiI2CSetup(EEPROM_ADDRESS);
-	
-	//printf("i2cAddr:%d\n", eeprom->i2cAddr);
+	eeprom->capacity = 16;	// initial capacity for dynamic array
+
+	// allocate memory tracking structures
+	eeprom->priorState = (uint8_t*)malloc(eeprom->size * sizeof(uint8_t));
+	eeprom->flippedBitsPtr = (BitRecord*)malloc(eeprom->capacity * sizeof(BitRecord));
+	eeprom->bitLookup = (int*)malloc(eeprom->size * 8 * sizeof(int));
+
+	// init lookup table to -1 (meaning bit has no history yet)
+	for (int i=0; i < (eeprom->size * 8); i++) {
+		eeprom->bitLookup[i] = -1;
+	}
+
 	/* Intialize EEPROM Connection
 	 * wiringPiI2CSetup() is a function that initializes an I2C device by passing its device address
 	 * This address can be found with "$ i2detect -y 1"
 	 * The functions return value is the standard Linux filehandle, -1 if any error
 	 * -1 is for linux file handle and wiringPi also returns -1 for failures
 	 */
-
-
+	eeprom->i2cAddr_fd = wiringPiI2CSetup(EEPROM_ADDRESS);	
+	
 	if (eeprom->i2cAddr_fd < 0) {
 		printf(ANSI_COLOR_RED"Error: "ANSI_COLOR_RESET"Failed to initialize EEPROM at address 0x%X\n", EEPROM_ADDRESS);
-		eeprom->failures = -1; // this will underflow, very big number
 		exit(EXIT_FAILURE);
 	}
 	
+	// initialize all bits in EEPROM to 1 by setting each byte to INIT_BYTES_VALUE.
+	
 	bool init = true;
-
-	/* initialize all bits in EEPROM to 1 by setting each byte to INIT_BYTES_VALUE.
-	*/
 	for (int reg = 0; reg < eeprom->size; reg++) {
 		if (wiringPiI2CWriteReg8(eeprom->i2cAddr_fd, reg, INIT_BYTES_VALUE) < 0) {
 			printf(ANSI_COLOR_RED"Error: "ANSI_COLOR_RESET"Failed to write to EEPROM at register: %d\n", reg);
 			init = false;
 			break;
 		}
-		delay(5);
+		delay(WRITE_DELAY); 
 		eeprom->priorState[reg] = (uint8_t)INIT_BYTES_VALUE;
 	}
-	close(eeprom->i2cAddr_fd);
-	if (init == false) {
-		free(eeprom->priorState);
-		exit(EXIT_FAILURE);
-	}
-	printf("Set %d bytes to %d\n",EEPROM_SIZE,INIT_BYTES_VALUE);
+
+	if (init == false) eepromClose(eeprom);
+
+	printf(ANSI_COLOR_GREEN"---- EEPROM Intialized ----"ANSI_COLOR_RESET
+	"\nSet %d bytes to %d\n",EEPROM_SIZE,INIT_BYTES_VALUE);
 }
 
 void logger(time_t startTime, FILE* csv_file, EEPROM* eeprom) {
 	time_t currTime = 0;
 	int elapsedTime = 0;
 
-	//===================================
-	// Check for bit flips and types 
-	//===================================
-	int data = -1;	// data stores the value in the read register
-	if (eeprom->i2cAddr_fd < 0) {	
-		eeprom->failures =-1337;
-		printf(ANSI_COLOR_RED"ERROR: "ANSI_COLOR_RESET"failed to initalize eeprom fd at %d\n", EEPROM_ADDRESS);
-		exit(EXIT_FAILURE);
-	}
-	
-	//===================================
-	// bit flip detection and tracking
-	//===================================
 	/*
-	
+	pseudocode
+
 	read each register
 	compare between register and previous register state
 	if mismatch:
@@ -109,56 +103,113 @@ void logger(time_t startTime, FILE* csv_file, EEPROM* eeprom) {
 		if still_mismatch
 			hardfault error detected, hardFault=true
 	*/
+	//===================================
+	// Check for bit flips and types 
+	//===================================
+	int data = -1;	// data stores the value in the read register
+
+	// read each register
 	for (int reg = 0; reg < eeprom->size; reg++) {
-		data = wiringPiI2CReadReg8(eeprom->i2cAddr_fd, reg);
+		data = wiringPiI2CReadReg8(eeprom->i2cAddr_fd, reg);	// store read value into data
+		
 		if (data < 0 ) { // failed to read
 			printf(ANSI_COLOR_RED"ERROR: "ANSI_COLOR_RESET"failed to read from EEPROM at register: %d data: %d eeprom->priorState: %d\n", reg, data, eeprom->priorState[reg]);
-			// TODO log which register can't be read but continue to check other registers	
+			continue; // skip this register
 		}
-		
-		printf("SEE: \rdata: %d byte:%d ",data,reg); //
+
+		// successful read, data >= 0
+		printf("\rdata: %d byte:%d ", data, reg);
 		fflush(stdout);
+		
+		// compare read byte to priorState of byte
+		if ((uint8_t)data != eeprom->priorState[reg]) {
+			// read byte doesn't match priorState
+			bool bitRequiresRestore = false;
+			uint8_t mismatchMask = 0;		
+			
+			// extract individual bits from byte to check which bit(s) flipped, note: there may be multiple in one byte
+			for (uint8_t i = 0; i < 8; i++) {
+				uint8_t currBit = (data & (1<<i) ) >> i;	// these bitwise operations extract only the i'th bit
+				uint8_t priorBit = (eeprom->priorState[reg] & (1 << i)) >> i;
+				
+				if (currBit != priorBit) {	// found a bit that flipped
+					bitRequiresRestore = true;
+					mismatchMask |= (1 << i);	// track which bit has flipped for verification later
 
-		if (data>0) { // successful read
+					int globalBitIndex = (reg * 8) + i;
+					int lookupIndex = eeprom->bitLookup[globalBitIndex];
+					BitRecord* currentBitRecord = NULL;
+				
+					// if bit has no history, create new record
+					if (lookupIndex == -1) {
+						if (eeprom->numBitFlips >= eeprom->capacity) {
+							eeprom->capacity *= 2;
+							eeprom->flippedBitsPtr = (BitRecord*)realloc(eeprom->flippedBitsPtr, eeprom->capacity * sizeof(BitRecord));
+						}
+						lookupIndex = eeprom->numBitFlips;
+						eeprom->bitLookup[globalBitIndex] = lookupIndex;
+						currentBitRecord = &eeprom->flippedBitsPtr[lookupIndex];
 
-			if ((uint8_t)data != eeprom->priorState[reg]) { 
-				eeprom->failures = eeprom->failures + 1;	// increment failure count
-
-				for (uint8_t i = 0; i < 8; i++) { // this byte doesn't match the prior state of the byte
-					// extract bit we are looking at to see which bit failed
-					uint8_t currBit = (data & (1<<i) ) >> i;
-					uint8_t priorBit = (((eeprom->priorState)[reg]) & (1 << i)) >> i;
-					// check what type of bit flip and increase counter accordingly
-					if (priorBit == 1 && currBit == 0) {
-						eeprom->oneToZeroFlips += 1;
+						currentBitRecord->byteOffset = reg;
+						currentBitRecord->bitIndex = i;
+						currentBitRecord->hardFault = false;
+						
+						eeprom->numBitFlips++;
 					}
-					if(priorBit == 0 && currBit == 1) {
-						eeprom->zeroToOneFlips += 1;
+					else {
+						currentBitRecord = &eeprom->flippedBitsPtr[lookupIndex];
+					}
+				// only increment flips if the bit isn't already stuck
+					if (currentBitRecord->hardFault == false) {
+						if (priorBit == 1 && currBit == 0) eeprom->oneToZeroFlips += 1;
+						if (priorBit == 0 && currBit == 1) eeprom->zeroToOneFlips += 1;
 					}
 				}
-			// restore byte to prior state before bit flip
-			if (wiringPiI2CWriteReg8(eeprom->i2cAddr_fd, reg, (eeprom->priorState[reg])) < 0) {
-				printf(ANSI_COLOR_RED"Error: "ANSI_COLOR_RESET
-				"Failed to write to previous value EEPROM at register: %d\n", reg);
-				break;
-			}
-			delay(5);
 				
-			// update prior state
-			(eeprom->priorState)[reg] = data;
+
+				// restore whole byte to prior state 
+				if (bitRequiresRestore) {
+					if (wiringPiI2CWriteReg8(eeprom->i2cAddr_fd, reg, eeprom->priorState[reg]) < 0) {
+						printf(ANSI_COLOR_RED"Error: "ANSI_COLOR_RESET
+						"I2C Transport failure while restoring EEPROM at register: %d\n", reg);
+						break;
+					}
+				}
+				else {
+					delay(WRITE_DELAY);
+					
+					// read data back to verify flip was SEU or Hard Fault
+					int verifyData = wiringPiI2CReadReg8(eeprom->i2cAddr_fd, reg);
+
+					if (verifyData >= 0 && (uint8_t)verifyData != eeprom->priorState[reg]) {
+						uint8_t verifyBit = (verifyData >> i) & 1;
+						uint8_t refBit = (eeprom->priorState[reg] >> i) & 1;
+
+						if ((verifyBit != refBit) && (mismatchMask & (1<<i))) {
+							int globalIndex = (reg * 8) + i;
+							int lIndex = eeprom->bitLookup[globalIndex];
+
+							if (lIndex != -1 && !eeprom->flippedBitsPtr[lIndex].hardFault) {
+								eeprom->flippedBitsPtr[lIndex].hardFault = true;
+								eeprom->numHardFaultBits++;
+							}
+						}
+					}
+				}
+			}
 		}
-	} 
-		else { // unsuccessful read
-			printf(ANSI_COLOR_RED"ERROR: "ANSI_COLOR_RESET"failed to read from EEPROM at register: %d data: %d eeprom->priorState: %d\n", reg, data, eeprom->priorState[reg]);
-		}
-		
 		// check time
 		currTime = time(NULL);
 		elapsedTime = (int) difftime(currTime, startTime);
 		
 		// log to .CSV file
-		fprintf(csv_file, "%d, %ld, %ld, %ld\n", elapsedTime, eeprom->failures, eeprom->oneToZeroFlips, eeprom->zeroToOneFlips);
-	}
+		fprintf(csv_file, "%d, %ld, %ld, %ld, %ld\n", elapsedTime, eeprom->numBitFlips, eeprom->oneToZeroFlips, eeprom->zeroToOneFlips, eeprom->numHardFaultBits);
+		
+		// monitor test
+		printf("\rTime: %-5d byte: %-6d data: %-3d, Bit Flips: %-5ld, 1->0: %-5ld, 0->1: %-5ld, Hard Faults: %-5ld      ",elapsedTime, reg, data, eeprom->numBitFlips, eeprom->oneToZeroFlips, eeprom->zeroToOneFlips, eeprom->numHardFaultBits);
+		fflush(stdout);
+	}	
+
 }
 
 int main(void) {
@@ -172,7 +223,7 @@ int main(void) {
 	if (scanf(" %c",&confirm) != 1 || confirm != 'y') {
 		return EXIT_FAILURE;
 	}
-	delay(2000); // 2 second delay
+	delay(1000); // 1 second delay
 	
 	//===============================
 	// read serial number
@@ -190,7 +241,7 @@ int main(void) {
 	}
 	close(serial_eeprom.i2cAddr_fd);
 	printf("Serial Number: %s\n", serial_number);
-	delay(3000);
+	delay(1000);
 
 	//==============================
 	// init EEPROM and file
@@ -198,7 +249,7 @@ int main(void) {
 	printf("\n---- Initializing EEPROM and file ----\n\n");
 
 	// setup eeprom
-	EEPROM eeprom = {0};	
+	EEPROM eeprom = {0};	// all members of the structure are intialized to 0, if its a pointer then NULL
 	initEEPROM(&eeprom);	// note: this function initializes an eeprom by setting all of its bits to a #defined VALUE							   // once this value is set it closes the eeprom connection and logger opens and reopens 
 							// this connection everytime its opened
 	// file creation
@@ -212,17 +263,16 @@ int main(void) {
 	}
 	printf("Saving data to file: %s\n",filename);
 
-	fprintf(csv_file, "Elapsed Time (s), Failures, 1->0 flips, 0->1 flips\n");
+	fprintf(csv_file, "Elapsed Time (s), Total Bit Flips, 1->0 flips, 0->1 flips, Hard Faults\n");
 	fclose(csv_file);
 	csv_file = fopen(filename, "a");
-	delay(5000);
+	delay(3000);
 
 	//=============================
 	// begin bit test
 	//=============================
 	printf("\n---- It's logging time ----\n\n");
 
-	eeprom.i2cAddr_fd = wiringPiI2CSetup(EEPROM_ADDRESS);
 	time_t ctime =time(NULL);
 	while (((int)difftime(time(NULL),ctime)) <= RUNNING_TIME_SEC) {
 		logger(ctime, csv_file, &eeprom);
