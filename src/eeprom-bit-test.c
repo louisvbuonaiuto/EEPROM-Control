@@ -7,7 +7,8 @@
 //========================================
 // eeprom-bit-test.c
 //========================================
-
+// SSHM -> SOIC
+// XHM  -> TSSOP
 #include <stdio.h>
 #include <stdint.h>
 #include <unistd.h>
@@ -23,9 +24,12 @@
 #define EEPROM_SERIAL_NUM_ADDRESS 0x58
 #define EEPROM_SIZE 128	// in bytes
 #define WRITE_DELAY 5	// ms, refer to datasheet for max write cycle time
-#define RUNNING_TIME_SEC 3
-#define INIT_BYTES_VALUE 0xFF
+#define RUNNING_TIME_SEC 86400 //86400= 24 hours 43200 seconds=12 hours 
+#define INIT_BYTES_VALUE 0xAA	// 0x55 01010101, 0xAA 10101010
 
+
+#define POLL_INTERVAL_MS 1000			// wait this long between logger() passes
+#define CHECKPOINT_INTERVAL_SEC 300	// how often to dump a full per-bit snapshot (5 min)
 
 void initEEPROM(EEPROM* eeprom) {
 
@@ -82,6 +86,52 @@ void initEEPROM(EEPROM* eeprom) {
 	"\nSet %d bytes to %d\n", EEPROM_SIZE, INIT_BYTES_VALUE);
 }
 
+// returns true only if every bit flagged in mismatchMask already has
+// hardFault == true recorded for it. Used to skip a pointless restore/verify
+// cycle on a byte whose flipped bits are all already known to be stuck
+bool allFlaggedBitsAreHardFault(EEPROM* eeprom, int reg, uint8_t mismatchMask) {
+	for (uint8_t i = 0; i < 8; i++) {
+		if (mismatchMask & (1 << i)) {
+			int idx = eeprom->bitLookup[(reg * 8) + i];
+			// if a flagged bit somehow has no record yet, or isn't marked
+			// hardFault, we can't skip -- treat conservatively as "not all faulted"
+			if (idx == -1 || !eeprom->flippedBitsPtr[idx].hardFault) {
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
+// writes a full snapshot of every BitRecord collected so far to a
+// separate CSV. Called periodically (every CHECKPOINT_INTERVAL_SEC) from
+// main() rather than from inside logger(), since it's a time-based
+// checkpoint, not a per-register or per-pass action.
+//
+// This exists so a 12-hour unattended run that crashes or loses power
+// partway through doesn't lose the detailed per-bit data (which bit,
+// how many times, hard fault status, first/last flip time) -- only the
+// aggregate CSV columns would otherwise survive a crash. The file is
+// fully overwritten each checkpoint (not appended), since it's meant to
+// always reflect the most current complete state, not a running history.
+void writeBitRecordSnapshot(EEPROM* eeprom, const char* filename) {
+	FILE* snapshot = fopen(filename, "w"); // "w" intentional: overwrite with latest full state
+	if (snapshot == NULL) {
+		printf(ANSI_COLOR_RED"Error: "ANSI_COLOR_RESET"failed to open checkpoint file %s\n", filename);
+		return; // non-fatal -- don't abort a 12 hour run just because a checkpoint write failed
+	}
+
+	fprintf(snapshot, "Byte Offset, Bit Index, Hard Fault, Times Flipped, First Flip Time (s), Last Flip Time (s)\n");
+	for (size_t n = 0; n < eeprom->numBitFlips + eeprom->numHardFaultBits; n++) {
+		BitRecord* r = &eeprom->flippedBitsPtr[n];
+		fprintf(snapshot, "%zu, %zu, %s, %zu, %ld, %ld\n",
+			r->byteOffset, r->bitIndex, r->hardFault ? "TRUE" : "FALSE",
+			r->timesFlipped, (long)r->firstFlipTime, (long)r->lastFlipTime);
+	}
+
+	fclose(snapshot);
+}
+
 // This function is called exactly ONCE per byte that had a mismatch, after
 // all 8 bits have been scanned and classified. It:
 //   - writes the whole byte back to the reference (priorState) value
@@ -128,8 +178,7 @@ bool restoreAndVerifyByte(EEPROM* eeprom, int reg, uint8_t mismatchMask, time_t 
 		}
 
 		if ((uint8_t)verifyData == eeprom->priorState[reg]) {
-			// restore verified successfully
-			return true;
+			return true; // restore verified successfully, byte matches priorState
 		}
 
 		// verifyData didn't match priorState -- figure out which of the
@@ -159,30 +208,44 @@ bool restoreAndVerifyByte(EEPROM* eeprom, int reg, uint8_t mismatchMask, time_t 
 	return false; // verification failed and bit is stuck
 }
 
-void logger(time_t startTime, FILE* csv_file, EEPROM* eeprom) {
+// Clogger() now takes an additional FILE* firstFlip_csv parameter.
+// Whenever a bit is seen to flip for the very first time (i.e. it's getting
+// a brand new BitRecord created, lookupIndex was -1), a row is appended
+// immediately to this file recording the bit's address (byte offset + bit
+// index) and the time it was first observed. This answers the request to
+// track/record a bit's address the first time it flips -- written straight
+// to its own CSV on the Pi's filesystem as it happens, rather than only
+// living in the in-memory BitRecord array (which, per the checkpointing
+// discussion above, could otherwise be lost on a crash).
+void logger(time_t startTime, FILE* csv_file, FILE* firstFlip_csv, EEPROM* eeprom) {
 	time_t currTime = 0;
 	int elapsedTime = 0;
 
 	/*
 	pseudocode for bit flip checking
 
-	read each register
-	if read failed: log read failure, skip register, continue
-	compare register to priorState
-	if mismatch:
-		for each of the 8 bits in the byte:
-			if bit differs from priorState:
-				record it in mismatchMask
-				look up (or create) its BitRecord via bitLookup
-				if not already hardFault: increment numBitFlips + directional counter,
-					update firstFlipTime/lastFlipTime
-		# ONLY after all 8 bits have been scanned:
-		call restoreAndVerifyByte() ONCE for the whole byte:
-			write priorState[reg] back
-			delay for write-cycle time
-			read back and compare
-			retry up to RESTORE_VERIFY_RETRIES times
-			only set hardFault=true if every retry still mismatches
+	for each register:
+		compute elapsedTime FIRST (fixed: previously this was computed at the
+			bottom of the loop, so BitRecord timestamps and the restoreAndVerifyByte
+			call were using elapsedTime left over from the PREVIOUS register,
+			and register 0 always recorded elapsedTime == 0 no matter when it
+			actually happened)
+		read register
+		if read failed: log read failure, skip register, continue
+		compare register to priorState
+		if mismatch:
+			for each of the 8 bits in the byte:
+				if bit differs from priorState:
+					record it in mismatchMask
+					look up (or create) its BitRecord via bitLookup
+					if newly created: append (byteOffset, bitIndex, elapsedTime) to firstFlip_csv
+					if not already hardFault: increment numBitFlips + directional counter,
+						update firstFlipTime/lastFlipTime
+			# ONLY after all 8 bits have been scanned:
+			if not all flagged bits are already known hard faults:
+				call restoreAndVerifyByte() ONCE for the whole byte
+			# else: skip the restore/verify entirely, outcome is already known
+		log CSV row for this register
 	*/
 	//===================================
 	// Check for bit flips and types 
@@ -191,10 +254,20 @@ void logger(time_t startTime, FILE* csv_file, EEPROM* eeprom) {
 
 	// read each register
 	for (int reg = 0; reg < eeprom->size; reg++) {
+
+		// FIX: elapsedTime is now computed at the TOP of the loop, before the
+		// read, so every timestamp recorded during this iteration (BitRecord
+		// first/lastFlipTime, the firstFlip_csv row, the restoreAndVerifyByte
+		// call, and the per-register CSV row) reflects the actual moment this
+		// specific register was checked -- not a stale value left over from
+		// whichever register was processed just before it.
+		currTime = time(NULL);
+		elapsedTime = (int) difftime(currTime, startTime);
+
 		data = wiringPiI2CReadReg8(eeprom->i2cAddr_fd, reg);	// store read value into data
 
 		if (data < 0) { // failed to read
-			eeprom->readFailures++; // ADDED: track transport read failures separately from bit flips
+			eeprom->readFailures++; 
 			printf(ANSI_COLOR_RED"ERROR: "ANSI_COLOR_RESET"failed to read from EEPROM at register: %d data: %d eeprom->priorState: %d\n",
 				reg, data, eeprom->priorState[reg]);
 			continue; // skip this register this pass
@@ -224,12 +297,6 @@ void logger(time_t startTime, FILE* csv_file, EEPROM* eeprom) {
 						if (eeprom->numBitFlips + eeprom->numHardFaultBits >= eeprom->capacity) {
 							size_t newCapacity = eeprom->capacity * 2;
 							BitRecord* resized = (BitRecord*)realloc(eeprom->flippedBitsPtr, newCapacity * sizeof(BitRecord));
-							// FIX: realloc's return value is now checked before use.
-							// If realloc fails it returns NULL while leaving the
-							// original block untouched -- the old code overwrote
-							// eeprom->flippedBitsPtr unconditionally, which on
-							// failure would leak the original allocation AND
-							// immediately segfault on the next dereference below.
 							if (resized == NULL) {
 								printf(ANSI_COLOR_RED"Error: "ANSI_COLOR_RESET
 									"realloc failed while growing flippedBitsPtr (capacity %zu)\n", newCapacity);
@@ -248,6 +315,14 @@ void logger(time_t startTime, FILE* csv_file, EEPROM* eeprom) {
 						currentBitRecord->timesFlipped  = 0;		
 						currentBitRecord->firstFlipTime = elapsedTime;
 						currentBitRecord->lastFlipTime  = elapsedTime;
+
+						// ADDED: this bit has never flipped before -- record its
+						// address (byte offset + bit index) and the time of this,
+						// its first observed flip, to the dedicated first-flip CSV.
+						// Written immediately (and flushed) so this record survives
+						// even if the program crashes later in the run.
+						fprintf(firstFlip_csv, "%d, %d, %d\n", elapsedTime, reg, i);
+						fflush(firstFlip_csv);
 					} else {
 						currentBitRecord = &eeprom->flippedBitsPtr[lookupIndex];
 					}
@@ -263,16 +338,16 @@ void logger(time_t startTime, FILE* csv_file, EEPROM* eeprom) {
 				}
 			}
 
-			// FIX: restore + verify now happens exactly ONCE here, after the
-			// full byte has been scanned -- not once per bit index inside
-			// the loop above. This removes the redundant repeated writes
-			// and is what actually makes hard-fault detection reachable.
-			restoreAndVerifyByte(eeprom, reg, mismatchMask, (time_t)elapsedTime);
+			// FIX/ADDED: only call restoreAndVerifyByte if at least one of the
+			// flagged bits isn't already a confirmed hard fault. Once a bit is
+			// known stuck, repeating the write+verify cycle on it every single
+			// pass for the rest of a 12 hour run just burns I2C bandwidth on an
+			// outcome you already know -- this can matter a lot once hundreds or
+			// thousands of bits have gone hard-fault later in a long run.
+			if (!allFlaggedBitsAreHardFault(eeprom, reg, mismatchMask)) {
+				restoreAndVerifyByte(eeprom, reg, mismatchMask, (time_t)elapsedTime);
+			}
 		}
-
-		// check time
-		currTime = time(NULL);
-		elapsedTime = (int) difftime(currTime, startTime);
 
 		// log to .CSV file
 		fprintf(csv_file, "%d, %zu, %zu, %zu, %zu, %zu\n",
@@ -293,7 +368,11 @@ int main(void) {
 	// user confirmation before test
 	//==================================
 	char confirm = 'n';
-	printf("This file is setup for the AT24CS01-XHM-B, %d bytes, to run for %d minutes \n", EEPROM_SIZE, RUNNING_TIME_SEC/60);
+	// FIX: RUNNING_TIME_SEC/60 gave 720 "minutes", which is correct but no
+	// longer a natural unit to confirm against at this scale -- switched to
+	// hours (RUNNING_TIME_SEC/3600) so the confirmation prompt matches how
+	// you actually think about a 12 hour run.
+	printf("This file is setup for the AT24CS01-XHM-B, %d bytes, to run for %d hours \n", EEPROM_SIZE, RUNNING_TIME_SEC/3600);
 	printf("Confirm? (y,N): ");
 	if (scanf(" %c", &confirm) != 1 || confirm != 'y') {
 		return EXIT_FAILURE;
@@ -331,7 +410,7 @@ int main(void) {
 
 	// file creation
 	char filename[100];
-	snprintf(filename, sizeof(filename), "data/bit-test-%s-data.csv", serial_number);
+	snprintf(filename, sizeof(filename), "data/AT24CS01-XHM-B-subcritical-pile-bit-test-%s-0x%02X-data.csv", serial_number,INIT_BYTES_VALUE);
 
 	FILE *csv_file = fopen(filename, "a");
 	if (csv_file == NULL) {
@@ -341,8 +420,24 @@ int main(void) {
 	printf("Saving data to file: %s\n", filename);
 
 	fprintf(csv_file, "Elapsed Time (s), Total Bit Flips, 1->0 flips, 0->1 flips, Hard Faults, Read Failures\n");
-	fclose(csv_file);
-	csv_file = fopen(filename, "a");
+
+	// track the first flip of every bit into a seperate csv file
+	char firstFlipFilename[100];
+	snprintf(firstFlipFilename, sizeof(firstFlipFilename), "data/AT24CS01-XHM-B-subcritical-pile-bit-test-%s-0x%02X-first-flips.csv", serial_number, INIT_BYTES_VALUE);
+	FILE *firstFlip_csv = fopen(firstFlipFilename, "a");
+	if (firstFlip_csv == NULL) {
+		printf(ANSI_COLOR_RED"Error: "ANSI_COLOR_RESET"Failed to open first-flip CSV file\n");
+		fclose(csv_file);
+		return EXIT_FAILURE;
+	}
+	fprintf(firstFlip_csv, "Elapsed Time (s), Byte Offset, Bit Index\n");
+	fflush(firstFlip_csv);
+	printf("Logging first-flip addresses to file: %s\n", firstFlipFilename);
+
+	// record a snapshot of the current state 
+	char snapshotFilename[100];
+	snprintf(snapshotFilename, sizeof(snapshotFilename), "data/AT24CS01-XHM-B-subcritical-pile-bit-test-%s-0x%02X-checkpoint.csv", serial_number,INIT_BYTES_VALUE);
+
 	delay(3000);
 
 	//=============================
@@ -351,16 +446,47 @@ int main(void) {
 	printf("\n---- It's logging time ----\n\n");
 
 	time_t ctime = time(NULL);
+	time_t lastCheckpointTime = ctime; // ADDED: tracks when we last wrote a checkpoint snapshot
+
+	// FIX: the file is now opened ONCE before the loop and kept open for the
+	// whole run. Previously this loop called fclose()+fopen() on csv_file
+	// every single pass -- with no pacing between passes, that could mean
+	// hundreds of thousands of open/close cycles over 12 hours, which is
+	// unnecessary SD card wear and syscall overhead. fflush() (below) gives
+	// the same "data survives a crash" guarantee at a fraction of the cost.
 	while (((int)difftime(time(NULL), ctime)) <= RUNNING_TIME_SEC) {
-		logger(ctime, csv_file, &eeprom);
-		fclose(csv_file);
-		csv_file = fopen(filename, "a");
+		logger(ctime, csv_file, firstFlip_csv, &eeprom);
+
+		// FIX: fflush() instead of fclose()+fopen() every pass -- pushes
+		// buffered data to disk without the overhead of closing and
+		// reopening the file descriptor each time.
+		fflush(csv_file);
+
+		// ADDED: periodic full per-bit checkpoint, independent of the fast
+		// per-pass CSV logging above. Only fires once every
+		// CHECKPOINT_INTERVAL_SEC of wall-clock time, not every pass.
+		time_t nowTime = time(NULL);
+		if (difftime(nowTime, lastCheckpointTime) >= CHECKPOINT_INTERVAL_SEC) {
+			writeBitRecordSnapshot(&eeprom, snapshotFilename);
+			lastCheckpointTime = nowTime;
+		}
+
+		// ADDED: pace the polling loop. Bit flips from beam exposure accumulate
+		// on the timescale of fluence, not milliseconds -- polling as fast as
+		// the I2C bus allows (the old behavior, with no delay here at all)
+		// would only inflate the CSV size and SD card writes for a 12 hour
+		// run without giving any better time resolution on real events.
+		delay(POLL_INTERVAL_MS);
 	}
 
 	//=============================
 	// close and free memory
 	//=============================
+	// write one final checkpoint snapshot capturing the complete end-of-run state, regardless of when the last periodic checkpoint fired.
+	writeBitRecordSnapshot(&eeprom, snapshotFilename);
+
 	fclose(csv_file);
+	fclose(firstFlip_csv);
 	close(eeprom.i2cAddr_fd);
 	free(eeprom.flippedBitsPtr);
 	free(eeprom.bitLookup);
